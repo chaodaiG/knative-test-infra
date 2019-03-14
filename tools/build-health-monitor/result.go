@@ -13,8 +13,6 @@ import (
 	"log"
 	"net/http"
 	"sort"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -109,15 +107,64 @@ func isGood(job *Job, cMax int) bool {
 	return true
 }
 
-func printLatestRuns(test Test, cMax int) {
-	res := make([]string, 0, 0)
-	for _, status := range test.Statuses {
-		for i := 0; cMax > 0 && i < status.Count; i++ {
-			cMax--
-			res = append(res, strconv.Itoa(status.Value))
+func printLatestRuns(job *Job, cMax int) {
+	for _, test := range job.Tests {
+		if "Overall" == test.Name {
+			res := ""
+			for _, status := range test.Statuses {
+				for i := 0; cMax > 0 && i < status.Count; i++ {
+					cMax--
+					switch status.Value {
+					case 1:
+						res += fmt.Sprintf("%-5s", "P")
+					case 12:
+						res += fmt.Sprintf("%-5s", "X")
+					default:
+						res += fmt.Sprintf("%-5s", "Other")
+					}
+				}
+			}
+			log.Println(res)
+			break
 		}
 	}
-	log.Println(strings.Join(res, " "))
+}
+
+func printTestCount(job *Job, cMax int) {
+	res := make([][]int, cMax)
+	for _, test := range job.Tests {
+		c := 0
+		for _, status := range test.Statuses {
+			for i := 0; c < cMax && i < status.Count; i++ {
+				if nil == res[c] || len(res[c]) == 0 {
+					res[c] = make([]int, 2)
+				}
+				switch status.Value {
+				case 0, 1:
+
+				default:
+					res[c][0]++
+				}
+				if 0 != status.Value {
+					res[c][1]++
+				}
+				c++
+			}
+		}
+	}
+
+	o := make([]string, 2, 2)
+	for _, val := range res {
+		if len(val) == 0 {
+			continue
+		}
+		for i := 0; i < 2; i++ {
+			o[i] += fmt.Sprintf("%-5d", val[i])
+		}
+	}
+	for i := 0; i < 2; i++ {
+		log.Println(o[i])
+	}
 }
 
 // getTabs get json of repo summary, unmarshal it and return jobs names
@@ -166,11 +213,8 @@ func main() {
 				continue
 			}
 			log.Println(r, tab)
-			for _, test := range job.Tests {
-				if "Overall" == test.Name {
-					printLatestRuns(test, cMax)
-				}
-			}
+			printLatestRuns(job, cMax)
+			printTestCount(job, cMax)
 		}
 	}
 }
