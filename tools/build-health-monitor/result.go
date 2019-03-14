@@ -20,7 +20,7 @@ import (
 
 var (
 	baseURL   = "https://testgrid.knative.dev/"
-	cMax      = 20 // max count of runs to be reported
+	cMax      = 10 // max count of runs to be reported
 	repoNames = []string{
 		"serving",
 		"build",
@@ -162,13 +162,13 @@ func main() {
 				log.Println("Failed getting data from job: ", err)
 				continue
 			}
-			if isGood(job, 20) {
+			if isGood(job, cMax) {
 				continue
 			}
 			log.Println(r, tab)
 			for _, test := range job.Tests {
 				if "Overall" == test.Name {
-					printLatestRuns(test, 20)
+					printLatestRuns(test, cMax)
 				}
 			}
 		}
