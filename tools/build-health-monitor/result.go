@@ -22,7 +22,6 @@ var (
 	repoNames = []string{
 		"serving",
 		"build",
-		"build-pipeline",
 		"eventing",
 		"eventing-sources",
 		"docs",
@@ -116,7 +115,7 @@ func printLatestRuns(job *Job, cMax int) {
 					cMax--
 					switch status.Value {
 					case 1:
-						res += fmt.Sprintf("%-5s", "P")
+						res += fmt.Sprintf("%-5s", ".")
 					case 12:
 						res += fmt.Sprintf("%-5s", "X")
 					default:
