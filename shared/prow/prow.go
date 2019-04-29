@@ -324,6 +324,43 @@ func getBuildIDFromBuildPath(buildPath string) (int, error) {
 	return strconv.Atoi(buildIDStr)
 }
 
+// GetPostsubmitJobsFromRepo get all postSubmit jobs from Repo
+func GetPostsubmitJobsFromRepo(repoName string) []Job {
+	var jobs []Job
+	for _, c := range gcs.ListDirectChildren(ctx, BucketName, "logs") {
+		if strings.Contains(path.Base(c), "knative-" + repoName) {
+			jobs = append(jobs, *NewJob(path.Base(c), PostsubmitJob, repoName, 0))
+		}
+	}
+	return jobs
+}
+
+// GetPullRequestsFromRepo lists Pull Requests from a repo
+func GetPullRequestsFromRepo(repoName string) []string {
+	return gcs.ListDirectChildren(ctx, BucketName, path.Join("pr-logs", "pull", OrgName+"_"+repoName))
+}
+
+// GetJobsFromPullRequest lists jobs of a PR
+func GetJobsFromPullRequest(repoName string, ID int) []Job {
+	var jobs []Job
+	gcsPath := path.Join("pr-logs", "pull", OrgName+"_"+repoName, strconv.Itoa(ID))
+	for _, c := range gcs.ListDirectChildren(ctx, BucketName, gcsPath) {
+		jobs = append(jobs, *NewJob(path.Base(c), PresubmitJob, repoName, ID))
+	}
+	return jobs
+}
+
+// GetBuildsFromPullRequest lists builds of a PR
+func GetBuildsFromPullRequest(repoName string, ID int) []Build {
+	var res []Build
+	for _, j := range GetJobsFromPullRequest(repoName, ID) {
+		for _, b := range j.GetBuilds() {
+			res = append(res, b)
+		}
+	}
+	return res
+}
+
 // unmarshalJSONFile reads a file from gcs, parses it with xml and write to v.
 // v must be an arbitrary struct, slice, or string.
 func unmarshalJSONFile(storagePath string, v interface{}) error {
