@@ -23,9 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/google/go-github/github"
@@ -33,14 +31,21 @@ import (
 )
 
 const (
-	org  = "kubernetes"
-	repo = "test-infra"
+	srcOrg  = "kubernetes"
+	srcRepo = "test-infra"
 	// PRHead is the head branch of k8s auto version bump PRs
 	// TODO(chaodaiG): using head branch querying is less ideal than using
 	// label `area/prow/bump`, which is not supported by Github API yet. Move
 	// to filter using this label once it's supported
-	PRHead = "k8s-ci-robot:autobump"
+	srcPRHead = "autobump"
 	// PRBase is the base branch of k8s auto version bump PRs
+	srcPRBase = "master"
+	// PRUser is the user from which PR was created
+	srcPRUser = "k8s-ci-robot"
+
+	org    = "chaodaiG"
+	repo   = "test-infra"
+	PRHead = "autobump"
 	PRBase = "master"
 	// Index for regex matching groups
 	imageImagePart = 1
@@ -50,6 +55,8 @@ const (
 	// Safe duration is the smallest amount of hours a version stayed
 	safeDuration = 12 // 12 hours
 	maxRetry     = 3
+
+	oncallAddress = "https://storage.googleapis.com/knative-infra-oncall/oncall.json"
 )
 
 var (
@@ -70,6 +77,15 @@ type GHClientWrapper struct {
 	ghutil.GithubOperations
 }
 
+type gitInfo struct {
+	org   string
+	repo  string
+	head  string
+	base  string
+	user  string
+	email string
+}
+
 // versions holds the version change for an image
 // oldVersion and newVersion are both in the format of "vYYYYMMDD-HASH-VARIANT"
 type versions struct {
@@ -87,188 +103,56 @@ type PRVersions struct {
 	PR               *github.PullRequest
 }
 
-// Helper method for adding a newly discovered tag into pv
-func (pv *PRVersions) getIndex(image, tag string) int {
-	if _, ok := pv.images[image]; !ok {
-		pv.images[image] = make([]versions, 0, 0)
-	}
-	_, variant := deconstructTag(tag)
-	iv := -1
-	for i, vs := range pv.images[image] {
-		if vs.variant == variant {
-			iv = i
-			break
-		}
-	}
-	if -1 == iv {
-		pv.images[image] = append(pv.images[image], versions{variant: variant})
-		iv = len(pv.images[image]) - 1
-	}
-	return iv
-}
-
-// Tags could be in the form of: v[YYYYMMDD]-[GIT_HASH](-[VARIANT_PART]),
-// separate it to `v[YYYYMMDD]-[GIT_HASH]` and `[VARIANT_PART]`
-func deconstructTag(in string) (string, string) {
-	dateCommit := in
-	var variant string
-	parts := strings.Split(in, "-")
-	if len(parts) > 2 {
-		variant = strings.Join(parts[2:], "-")
-	}
-	if len(parts) > 1 {
-		dateCommit = fmt.Sprintf("%s-%s", parts[0], parts[1])
-	}
-	return dateCommit, variant
-}
-
-// get key with highest value
-func getDominantKey(m map[string]int) string {
-	var res string
-	for key, v := range m {
-		if "" == res || v > m[res] {
-			res = key
-		}
-	}
-	return res
-}
-
-func (pv *PRVersions) getDominantVersions() versions {
-	if nil != pv.dominantVersions {
-		return *pv.dominantVersions
-	}
-
-	cOld := make(map[string]int)
-	cNew := make(map[string]int)
-	for _, vss := range pv.images {
-		for _, vs := range vss {
-			normOldTag, _ := deconstructTag(vs.oldVersion)
-			normNewTag, _ := deconstructTag(vs.newVersion)
-			cOld[normOldTag]++
-			cNew[normNewTag]++
-		}
-	}
-
-	pv.dominantVersions = &versions{
-		oldVersion: getDominantKey(cOld),
-		newVersion: getDominantKey(cNew),
-	}
-
-	return *pv.dominantVersions
-}
-
-// parse changelist, find all version changes, and store them in image name: versions map
-func (pv *PRVersions) parseChangelist(gcw *GHClientWrapper) error {
-	fs, err := gcw.ListFiles(org, repo, *pv.PR.Number)
-	if nil != err {
-		return err
-	}
-	for _, f := range fs {
-		if nil == f.Patch {
-			continue
-		}
-		minuses := imageMinusRegexp.FindAllStringSubmatch(*f.Patch, -1)
-		for _, minus := range minuses {
-			iv := pv.getIndex(minus[imageImagePart], minus[imageTagPart])
-			pv.images[minus[imageImagePart]][iv].oldVersion = minus[imageTagPart]
-		}
-
-		pluses := imagePlusRegexp.FindAllStringSubmatch(*f.Patch, -1)
-		for _, plus := range pluses {
-			iv := pv.getIndex(plus[imageImagePart], plus[imageTagPart])
-			pv.images[plus[imageImagePart]][iv].newVersion = plus[imageTagPart]
-		}
-	}
-
-	return nil
-}
-
-// Query all PRs from "k8s-ci-robot:autobump", find PR roughly 7 days old and was not reverted later.
-// Only return error if it's github related
-func getBestVersion(gcw *GHClientWrapper, org, repo, head, base string) (*PRVersions, error) {
-	visited := make(map[string]PRVersions)
-	var bestPv *PRVersions
-	var overallErr error
-	var bestDelta float64 = maxDelta + 1
-	PRs, err := gcw.ListPullRequests(org, repo, head, base)
-	if nil != err {
-		return bestPv, fmt.Errorf("failed list pull request: '%v'", err)
-	}
-
-	for _, PR := range PRs {
-		if nil == PR.State || string(ghutil.PullRequestCloseState) != *PR.State {
-			continue
-		}
-		delta := targetTime.Sub(*PR.CreatedAt).Hours()
-		if delta > maxDelta {
-			break // Over 9 days old, too old
-		}
-		pv := PRVersions{
-			images: make(map[string][]versions),
-			PR:     PR,
-		}
-		if err := pv.parseChangelist(gcw); nil != err {
-			overallErr = fmt.Errorf("failed listing files from PR '%d': '%v'", *PR.Number, err)
-			break
-		}
-		vs := pv.getDominantVersions()
-		if "" == vs.oldVersion || "" == vs.newVersion {
-			log.Printf("Warning: found PR misses version change '%d'", *PR.Number)
-			continue
-		}
-		visited[vs.oldVersion] = pv
-		// check if too fresh here as need the data in visited
-		if delta < -maxDelta { // In past 5 days, too fresh
-			continue
-		}
-		if updatePR, ok := visited[vs.newVersion]; ok {
-			if updatePR.getDominantVersions().newVersion == vs.oldVersion { // The updatePR is reverting this PR
-				continue
-			}
-			if updatePR.PR.CreatedAt.Before(PR.CreatedAt.Add(time.Hour * safeDuration)) {
-				// The update PR is within 12 hours of current PR, consider unsafe
-				continue
-			}
-		}
-		if nil == bestPv || math.Abs(delta) < math.Abs(bestDelta) {
-			bestDelta = delta
-			bestPv = &pv
-		}
-	}
-	return bestPv, overallErr
-}
-
-func retryGetBestVersion(gcw *GHClientWrapper, org, repo, head, base string) (*PRVersions, error) {
-	var bestPv *PRVersions
-	var overallErr error
-	// retry if there is github related error
-	for retryCount := 0; nil == overallErr && retryCount < maxRetry; retryCount++ {
-		bestPv, overallErr = getBestVersion(gcw, org, repo, head, base)
-		if nil != overallErr {
-			log.Println(overallErr)
-			if maxRetry-1 != retryCount {
-				log.Printf("Retry #%d", retryCount+1)
-			}
-		}
-	}
-	return bestPv, overallErr
-}
-
 func main() {
 	githubAccount := flag.String("github-account", "", "Token file for Github authentication")
+	gitUser := flag.String("git-user", "", "The name to use on the git commit. Requires --git-email")
+	gitEmail := flag.String("git-email", "", "The email to use on the git commit. Requires --git-name")
+	dryrun := flag.Bool("dry-run", false, "dry run switch")
 	flag.Parse()
+
+	if nil != dryrun && true == *dryrun {
+		log.Printf("running in [dry run mode]")
+	}
+
+	if nil == gitUser || "" == *gitUser {
+		log.Fatalf("git-user must be provided")
+	}
 
 	gc, err := ghutil.NewGithubClient(*githubAccount)
 	if nil != err {
 		log.Fatalf("cannot authenticate to github: %v", err)
 	}
-	gcw := &GHClientWrapper{gc}
 
-	bestVersion, err := retryGetBestVersion(gcw, org, repo, PRHead, PRBase)
-	if nil != err {
-		log.Fatalf("cannot get best version from %s/%s: '%v'", org, repo, err)
+	srcGI := gitInfo{
+		org:  srcOrg,
+		repo: srcRepo,
+		head: srcPRHead,
+		base: srcPRBase,
+		user: srcPRUser,
 	}
 
-	log.Println(bestVersion.images)
+	targetGI := gitInfo{
+		org:   org,
+		repo:  repo,
+		head:  PRHead,
+		base:  PRBase,
+		user:  *gitUser,
+		email: *gitEmail,
+	}
+
+	gcw := &GHClientWrapper{gc}
+	bestVersion, err := retryGetBestVersion(gcw, srcGI)
+	if nil != err {
+		log.Fatalf("cannot get best version from %s/%s: '%v'", srcGI.org, srcGI.repo, err)
+	}
+
 	log.Println(bestVersion.dominantVersions)
+
+	if err = updateVersions(bestVersion, *dryrun); nil != err {
+		log.Fatalf("failed updating versions: '%v'", err)
+	}
+
+	if err = createOrUpdatePR(gcw, bestVersion, targetGI, *dryrun); nil != err {
+		log.Fatalf("failed creating pullrequest: '%v'", err)
+	}
 }
