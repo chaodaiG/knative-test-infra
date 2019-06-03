@@ -70,6 +70,13 @@ type GHClientWrapper struct {
 	ghutil.GithubOperations
 }
 
+// Client is a catching all, contains configs, other clients, and data
+type Client struct {
+	githubClient *ghutil.GithubOperations
+	PRs          []*github.PullRequest // contains all PRs queried
+	bestPv       *PRVersions
+}
+
 // versions holds the version change for an image
 // oldVersion and newVersion are both in the format of "vYYYYMMDD-HASH-VARIANT"
 type versions struct {
@@ -256,7 +263,14 @@ func retryGetBestVersion(gcw *GHClientWrapper, org, repo, head, base string) (*P
 
 func main() {
 	githubAccount := flag.String("github-account", "", "Token file for Github authentication")
+	gitName := flag.String("git-name", "", "The name to use on the git commit. Requires --git-email. If not specified, uses the system default.")
+	gitEmail := flag.String("git-email", "", "The email to use on the git commit. Requires --git-name. If not specified, uses the system default.")
+	dryrun := flag.Bool("dry-run", false, "dry run switch")
 	flag.Parse()
+
+	if nil != dryrun && true == *dryrun {
+		log.Printf("running in [dry run mode]")
+	}
 
 	gc, err := ghutil.NewGithubClient(*githubAccount)
 	if nil != err {
@@ -271,4 +285,6 @@ func main() {
 
 	log.Println(bestVersion.images)
 	log.Println(bestVersion.dominantVersions)
+
+	update(bestVersion, *gitName, *gitEmail, *dryrun)
 }
