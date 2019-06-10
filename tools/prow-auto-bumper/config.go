@@ -40,7 +40,7 @@ const (
 	srcPRUserID = "k8s-ci-robot"
 
 	// Git info for target repo that Prow version bump PR targets
-	org  = "knative"
+	org  = "chaodaiG"
 	repo = "test-infra"
 	// PRHead is branch name where the changes occur
 	PRHead = "autobump"
