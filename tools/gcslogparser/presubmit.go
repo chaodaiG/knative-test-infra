@@ -18,6 +18,7 @@ package main
 
 import (
 	"path"
+	"sort"
 	"strconv"
 
 	"github.com/knative/test-infra/shared/prow"
@@ -44,18 +45,37 @@ func (c *Parser) processPR() {
 	}
 }
 
+func (c *Parser) feedSinglePR(ID int, repoName string) {
+	c.wgPR.Add(1)
+	c.PrChan <- prInfo{
+		repoName: repoName,
+		ID:       ID,
+	}
+}
+
 func (c *Parser) feedPresubmitJobsFromRepo(repoName string) {
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 1000; i++ {
 		go c.processPR()
 	}
-
-	for _, pr := range prow.GetPullRequestsFromRepo(repoName) {
+	allPRs := prow.GetPullRequestsFromRepo(repoName)
+	var validIDs []int
+	for _, pr := range allPRs {
 		if ID, _ := strconv.Atoi(path.Base(pr)); -1 != ID {
-			c.wgPR.Add(1)
-			c.PrChan <- prInfo{
-				repoName: repoName,
-				ID:       ID,
-			}
+			validIDs = append(validIDs, ID)
+		}
+	}
+
+	sort.Sort(sort.Reverse(sort.IntSlice(validIDs)))
+	for i, ID := range validIDs {
+		if i%50 == 0 {
+			c.feedSinglePR(ID, repoName)
+		}
+	}
+
+	// time.Sleep(10 * time.Second)
+	for i, ID := range validIDs {
+		if i%50 != 0 {
+			c.feedSinglePR(ID, repoName)
 		}
 	}
 }

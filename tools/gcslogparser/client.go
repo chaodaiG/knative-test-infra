@@ -18,6 +18,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"sync"
@@ -40,7 +41,7 @@ type Parser struct {
 	found     [][]string
 	processed []string
 
-	buildIDChan chan int
+	buildIDChan chan int // keeps the highest buildID which started before StartDate
 
 	mutex         *sync.Mutex
 	buildIDMutext *sync.Mutex
@@ -51,14 +52,28 @@ type buildInfo struct {
 	ID  int
 }
 
-func (c *Parser) updateBuildIDChan(newVal int, comp func(int) bool) {
+// Check to see if the buildID is older than currently found old buildID
+func (c *Parser) buildIDTooOld(buildID int) bool {
+	c.buildIDMutext.Lock()
+	defer c.buildIDMutext.Unlock()
+	tooOld := <-c.buildIDChan
+	res := (buildID < tooOld)
+	go func() { c.buildIDChan <- tooOld }()
+	// log.Printf("build ID %d %v too old", buildID, res)
+	return res
+}
+
+func (c *Parser) updateBuildIDChan(newVal int, comp func(int) bool) bool {
+	var res bool
 	c.buildIDMutext.Lock()
 	defer c.buildIDMutext.Unlock()
 	tooOld := <-c.buildIDChan
 	if comp(tooOld) {
 		tooOld = newVal
+		res = true
 	}
 	go func() { c.buildIDChan <- tooOld }()
+	return res
 }
 
 func NewParser(serviceAccount string) (*Parser, error) {
@@ -70,16 +85,14 @@ func NewParser(serviceAccount string) (*Parser, error) {
 	c.mutex = &sync.Mutex{}
 	c.buildIDMutext = &sync.Mutex{}
 
-	c.PrChan = make(chan prInfo, 100)
-	c.jobChan = make(chan prow.Job, 100)
-	c.buildChan = make(chan buildInfo, 1000)
-
-	// close(c.buildIDChan)
+	c.PrChan = make(chan prInfo, 1000)
+	c.jobChan = make(chan prow.Job, 1000)
+	c.buildChan = make(chan buildInfo, 10000)
 
 	c.buildIDChan = make(chan int)
 	go func() { c.buildIDChan <- 1 }()
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 1000; i++ {
 		go c.jobListener()
 	}
 	for i := 0; i < 1000; i++ {
@@ -104,18 +117,35 @@ func (c *Parser) setStartDate(startDate string) error {
 	return nil
 }
 
+func (c *Parser) feedSingleBuild(j prow.Job, buildID int) {
+	if isTooOld := c.buildIDTooOld(buildID); isTooOld {
+		// log.Printf("skipping %d %s", buildID, j.StoragePath)
+		return
+	}
+	c.wgBuild.Add(1)
+	c.buildChan <- buildInfo{
+		job: j,
+		ID:  buildID,
+	}
+}
+
 func (c *Parser) jobListener() {
 	for {
 		select {
 		case j := <-c.jobChan:
-			for _, buildID := range j.GetBuildIDs() {
-				c.updateBuildIDChan(buildID, func(tooOld int) bool {
-					return buildID < tooOld
-				})
-				c.wgBuild.Add(1)
-				c.buildChan <- buildInfo{
-					job: j,
-					ID:  buildID,
+			// First pass, select 1 out of every 50 runs, so the base line of tooold buildID
+			// can be quickly formed to avoid GCS operations on too old runs.
+			// exclude 0 for first pass as PR jobs may only contain 1 run, don't let it jump too fast
+			for index, buildID := range j.GetBuildIDs() {
+				if index%50 == 0 && index != 0 {
+					c.feedSingleBuild(j, buildID)
+				}
+			}
+			// Sleep 10 seconds so baseline is established
+			time.Sleep(10 * time.Second)
+			for index, buildID := range j.GetBuildIDs() {
+				if index == 0 || index%50 != 0 {
+					c.feedSingleBuild(j, buildID)
 				}
 			}
 			c.wgJob.Done()
@@ -127,21 +157,31 @@ func (c *Parser) buildListener() {
 	for {
 		select {
 		case b := <-c.buildChan:
-			build := b.job.NewBuild(b.ID)
-			if build.FinishTime != nil {
-				if *build.FinishTime > c.StartDate.Unix() {
-					content, _ := build.ReadFile("build-log.txt")
-					found := c.logParser(string(content))
-					c.mutex.Lock()
-					c.processed = append(c.processed, build.StoragePath)
-					if "" != found {
-						c.found = append(c.found, []string{found, time.Unix(*build.StartTime, 0).String(), build.StoragePath})
+			if isTooOld := c.buildIDTooOld(b.ID); !isTooOld {
+				start := time.Now()
+				build := b.job.NewBuild(b.ID)
+				// log.Println("Download: ", b.ID, b.job.StoragePath, "took: ", time.Since(start))
+				if build.FinishTime != nil {
+					if *build.FinishTime > c.StartDate.Unix() {
+						start = time.Now()
+						content, _ := build.ReadFile("build-log.txt")
+						log.Println("Read file: ", b.ID, b.job.StoragePath, "took: ", time.Since(start))
+						if isTooOld = c.buildIDTooOld(b.ID); !isTooOld {
+							start = time.Now()
+							found := c.logParser(string(content))
+							c.mutex.Lock()
+							c.processed = append(c.processed, build.StoragePath)
+							if "" != found {
+								c.found = append(c.found, []string{found, time.Unix(*build.StartTime, 0).String(), build.StoragePath})
+							}
+							c.mutex.Unlock()
+							// log.Println("Parsing: ", b.ID, b.job.StoragePath, "took: ", time.Since(start))
+						}
+					} else {
+						c.updateBuildIDChan(b.ID, func(tooOld int) bool {
+							return b.ID > tooOld
+						})
 					}
-					c.mutex.Unlock()
-				} else {
-					c.updateBuildIDChan(b.ID, func(tooOld int) bool {
-						return b.ID > tooOld
-					})
 				}
 			}
 			c.wgBuild.Done()

@@ -50,12 +50,6 @@ func parseOptions() *Flags {
 	return &f
 }
 
-// func getPreviousDay(dateStr string) string {
-// 	today, _ := time.Parse(time.RFC3339, dateStr+"T00:00:00.000Z")
-// 	year, month, date := today.Add(-24 * time.Hour)
-// 	return year + "-" + month + "-" + date
-// }
-
 func groupByJob(found [][]string) {
 	var msgs []string
 	for _, elems := range found {
@@ -119,19 +113,7 @@ func main() {
 	if len(f.parseRegex) == 0 {
 		log.Fatal("--parser must be provided")
 	}
-	// realJobFilter := f.jobFilter
-	// realRepoNames := f.repoNames
-	// realDate := f.startDate
-	// f.jobFilter = "ci-knative-serving-nightly-release"
-	// f.repoNames = "serving"
-	// f.startDate = getPreviousDay(realDate)
-	// fc := parse(f)
-	// sort.Slice(fc, func(i, j int) bool {
-	// 	return path.Base(fc[i]) < path.Base(fc[j])
-	// })
 
-	// f.jobFilter = realJobFilter
-	// f.repoNames = realRepoNames
 	c := parse(f)
 	log.Printf("Processed %d builds, and found %d matches", len(c.processed), len(c.found))
 	switch f.groupBy {
