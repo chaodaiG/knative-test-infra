@@ -40,12 +40,25 @@ type Parser struct {
 	found     [][]string
 	processed []string
 
-	mutex *sync.Mutex
+	buildIDChan chan int
+
+	mutex         *sync.Mutex
+	buildIDMutext *sync.Mutex
 }
 
 type buildInfo struct {
 	job prow.Job
 	ID  int
+}
+
+func (c *Parser) updateBuildIDChan(newVal int, comp func(int) bool) {
+	c.buildIDMutext.Lock()
+	defer c.buildIDMutext.Unlock()
+	tooOld := <-c.buildIDChan
+	if comp(tooOld) {
+		tooOld = newVal
+	}
+	go func() { c.buildIDChan <- tooOld }()
 }
 
 func NewParser(serviceAccount string) (*Parser, error) {
@@ -55,10 +68,16 @@ func NewParser(serviceAccount string) (*Parser, error) {
 
 	c := &Parser{}
 	c.mutex = &sync.Mutex{}
+	c.buildIDMutext = &sync.Mutex{}
 
 	c.PrChan = make(chan prInfo, 100)
 	c.jobChan = make(chan prow.Job, 100)
-	c.buildChan = make(chan buildInfo, 10000)
+	c.buildChan = make(chan buildInfo, 1000)
+
+	// close(c.buildIDChan)
+
+	c.buildIDChan = make(chan int)
+	go func() { c.buildIDChan <- 1 }()
 
 	for i := 0; i < 100; i++ {
 		go c.jobListener()
@@ -90,6 +109,9 @@ func (c *Parser) jobListener() {
 		select {
 		case j := <-c.jobChan:
 			for _, buildID := range j.GetBuildIDs() {
+				c.updateBuildIDChan(buildID, func(tooOld int) bool {
+					return buildID < tooOld
+				})
 				c.wgBuild.Add(1)
 				c.buildChan <- buildInfo{
 					job: j,
@@ -106,15 +128,21 @@ func (c *Parser) buildListener() {
 		select {
 		case b := <-c.buildChan:
 			build := b.job.NewBuild(b.ID)
-			if build.FinishTime != nil && *build.FinishTime > c.StartDate.Unix() {
-				content, _ := build.ReadFile("build-log.txt")
-				found := c.logParser(string(content))
-				c.mutex.Lock()
-				c.processed = append(c.processed, build.StoragePath)
-				if "" != found {
-					c.found = append(c.found, []string{found, time.Unix(*build.StartTime, 0).String(), build.StoragePath})
+			if build.FinishTime != nil {
+				if *build.FinishTime > c.StartDate.Unix() {
+					content, _ := build.ReadFile("build-log.txt")
+					found := c.logParser(string(content))
+					c.mutex.Lock()
+					c.processed = append(c.processed, build.StoragePath)
+					if "" != found {
+						c.found = append(c.found, []string{found, time.Unix(*build.StartTime, 0).String(), build.StoragePath})
+					}
+					c.mutex.Unlock()
+				} else {
+					c.updateBuildIDChan(b.ID, func(tooOld int) bool {
+						return b.ID > tooOld
+					})
 				}
-				c.mutex.Unlock()
 			}
 			c.wgBuild.Done()
 		}
@@ -130,6 +158,9 @@ func (c *Parser) cleanup() {
 	}
 	if c.buildChan != nil {
 		close(c.buildChan)
+	}
+	if c.buildIDChan != nil {
+		close(c.buildIDChan)
 	}
 }
 

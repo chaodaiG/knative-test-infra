@@ -25,6 +25,37 @@ import (
 	"strings"
 )
 
+type Flags struct {
+	serviceAccount string
+	repoNames      string
+	startDate      string
+	parseRegex     string
+	jobFilter      string
+	prOnly         bool
+	ciOnly         bool
+	groupBy        string
+}
+
+func parseOptions() *Flags {
+	var f Flags
+	flag.StringVar(&f.serviceAccount, "service-account", os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), "JSON key file for GCS service account")
+	flag.StringVar(&f.repoNames, "repo", "test-infra", "repo to be analyzed, comma separated")
+	flag.StringVar(&f.startDate, "start-date", "2017-01-01", "cut off date to be analyzed")
+	flag.StringVar(&f.parseRegex, "parser", "", "regex string used for parsing")
+	flag.StringVar(&f.jobFilter, "jobs", "", "jobs to be analyzed, comma separated")
+	flag.BoolVar(&f.prOnly, "pr-only", false, "supplied if just want to analyze PR jobs")
+	flag.BoolVar(&f.ciOnly, "ci-only", false, "supplied if just want to analyze CI jobs")
+	flag.StringVar(&f.groupBy, "groupby", "job(default)", "output groupby, supports: match(group by matches)")
+	flag.Parse()
+	return &f
+}
+
+// func getPreviousDay(dateStr string) string {
+// 	today, _ := time.Parse(time.RFC3339, dateStr+"T00:00:00.000Z")
+// 	year, month, date := today.Add(-24 * time.Hour)
+// 	return year + "-" + month + "-" + date
+// }
+
 func groupByJob(found [][]string) {
 	var msgs []string
 	for _, elems := range found {
@@ -53,56 +84,63 @@ func groupByMatch(found [][]string) {
 	}
 }
 
-func main() {
-	serviceAccount := flag.String("service-account", os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), "JSON key file for GCS service account")
-	repoNames := flag.String("repo", "test-infra", "repo to be analyzed, comma separated")
-	startDate := flag.String("start-date", "2017-01-01", "cut off date to be analyzed")
-	parseRegex := flag.String("parser", "", "regex string used for parsing")
-	jobFilter := flag.String("jobs", "", "jobs to be analyzed, comma separated")
-	prOnly := flag.Bool("pr-only", false, "supplied if just want to analyze PR jobs")
-	ciOnly := flag.Bool("ci-only", false, "supplied if just want to analyze CI jobs")
-	groupBy := flag.String("groupby", "job(default)", "output groupby, supports: match(group by matches)")
-	flag.Parse()
-
-	if "" == *parseRegex {
-		log.Fatal("--parser must be provided")
-	}
-
-	c, _ := NewParser(*serviceAccount)
+func parse(f *Flags) *Parser {
+	c, _ := NewParser(f.serviceAccount)
 	c.logParser = func(s string) string {
-		return regexp.MustCompile(*parseRegex).FindString(s)
+		return regexp.MustCompile(f.parseRegex).FindString(s)
 	}
 	c.CleanupOnInterrupt()
 	defer c.cleanup()
 
-	c.setStartDate(*startDate)
-	for _, j := range strings.Split(*jobFilter, ",") {
+	c.setStartDate(f.startDate)
+	for _, j := range strings.Split(f.jobFilter, ",") {
 		if "" != j {
 			c.jobFilter = append(c.jobFilter, j)
 		}
 	}
 
-	for _, repo := range strings.Split(*repoNames, ",") {
+	for _, repo := range strings.Split(f.repoNames, ",") {
 		log.Printf("Repo: '%s'", repo)
-		if !*prOnly {
+		if !f.prOnly {
 			log.Println("\tProcessing postsubmit jobs")
 			c.feedPostsubmitJobsFromRepo(repo)
 		}
-		if !*ciOnly {
+		if !f.ciOnly {
 			log.Println("\tProcessing presubmit jobs")
 			c.feedPresubmitJobsFromRepo(repo)
 		}
 	}
 	c.wait()
+	return c
+}
+
+func main() {
+	f := parseOptions()
+	if len(f.parseRegex) == 0 {
+		log.Fatal("--parser must be provided")
+	}
+	// realJobFilter := f.jobFilter
+	// realRepoNames := f.repoNames
+	// realDate := f.startDate
+	// f.jobFilter = "ci-knative-serving-nightly-release"
+	// f.repoNames = "serving"
+	// f.startDate = getPreviousDay(realDate)
+	// fc := parse(f)
+	// sort.Slice(fc, func(i, j int) bool {
+	// 	return path.Base(fc[i]) < path.Base(fc[j])
+	// })
+
+	// f.jobFilter = realJobFilter
+	// f.repoNames = realRepoNames
+	c := parse(f)
 	log.Printf("Processed %d builds, and found %d matches", len(c.processed), len(c.found))
-	switch *groupBy {
+	switch f.groupBy {
 	case "job":
 		groupByJob(c.found)
 	case "match":
 		groupByMatch(c.found)
 	default:
-		log.Printf("--groupby doesn't support %s, fallback to default", *groupBy)
+		log.Printf("--groupby doesn't support %s, fallback to default", f.groupBy)
 		groupByJob(c.found)
 	}
-
 }
