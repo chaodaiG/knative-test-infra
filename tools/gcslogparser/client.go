@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sync"
 	"time"
@@ -45,6 +46,8 @@ type Parser struct {
 
 	mutex         *sync.Mutex
 	buildIDMutext *sync.Mutex
+
+	start time.Time
 }
 
 type buildInfo struct {
@@ -82,6 +85,7 @@ func NewParser(serviceAccount string) (*Parser, error) {
 	}
 
 	c := &Parser{}
+	c.start = time.Now()
 	c.mutex = &sync.Mutex{}
 	c.buildIDMutext = &sync.Mutex{}
 
@@ -160,15 +164,19 @@ func (c *Parser) buildListener() {
 			if isTooOld := c.buildIDTooOld(b.ID); !isTooOld {
 				start := time.Now()
 				build := b.job.NewBuild(b.ID)
-				// log.Println("Download: ", b.ID, b.job.StoragePath, "took: ", time.Since(start))
+				log.Println("Initialize: ", b.ID, b.job.StoragePath, "took: ", time.Since(start))
 				if build.FinishTime != nil {
 					if *build.FinishTime > c.StartDate.Unix() {
 						start = time.Now()
-						content, _ := build.ReadFile("build-log.txt")
+						// content, _ := build.ReadFile("build-log.txt")
+						output, err := exec.Command("gsutil", "cat", "gs://knative-prow/"+build.GetBuildLogPath()).CombinedOutput()
+						if err != nil {
+							log.Fatalf("Error downloading: '%s' -err: '%v' '%v'", build.GetBuildLogPath(), string(output), err)
+						}
 						log.Println("Read file: ", b.ID, b.job.StoragePath, "took: ", time.Since(start))
 						if isTooOld = c.buildIDTooOld(b.ID); !isTooOld {
 							start = time.Now()
-							found := c.logParser(string(content))
+							found := c.logParser(string(output))
 							c.mutex.Lock()
 							c.processed = append(c.processed, build.StoragePath)
 							if "" != found {
@@ -202,6 +210,8 @@ func (c *Parser) cleanup() {
 	if c.buildIDChan != nil {
 		close(c.buildIDChan)
 	}
+
+	log.Println("Client lived: ", time.Now().Sub(c.start))
 }
 
 // CleanupOnInterrupt will execute the function cleanup if an interrupt signal is caught
