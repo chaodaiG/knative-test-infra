@@ -24,6 +24,23 @@ import (
 	"github.com/knative/test-infra/shared/prow"
 )
 
+// This value was decided arbitrarily at 07/17/19, based on "active" PRs in each repo
+// double quotes on active means some heuristic on some old values
+// TODO: derive this from active PR query
+var oldestActivePR = map[string]int{
+	"serving":    4000,
+	"test-infra": 1000,
+}
+
+func isOLdPR(repoName string, ID int) bool {
+	if val, ok := oldestActivePR[repoName]; ok {
+		if ID < val {
+			return true
+		}
+	}
+	return false
+}
+
 type prInfo struct {
 	repoName string
 	ID       int
@@ -60,7 +77,7 @@ func (c *Parser) feedPresubmitJobsFromRepo(repoName string) {
 	allPRs := prow.GetPullRequestsFromRepo(repoName)
 	var validIDs []int
 	for _, pr := range allPRs {
-		if ID, _ := strconv.Atoi(path.Base(pr)); -1 != ID {
+		if ID, _ := strconv.Atoi(path.Base(pr)); -1 != ID && !isOLdPR(repoName, ID) {
 			validIDs = append(validIDs, ID)
 		}
 	}

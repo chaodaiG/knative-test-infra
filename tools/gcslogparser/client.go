@@ -18,6 +18,7 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -90,16 +91,16 @@ func NewParser(serviceAccount string) (*Parser, error) {
 	c.buildIDMutext = &sync.Mutex{}
 
 	c.PrChan = make(chan prInfo, 1000)
-	c.jobChan = make(chan prow.Job, 1000)
+	c.jobChan = make(chan prow.Job, 5000)
 	c.buildChan = make(chan buildInfo, 10000)
 
 	c.buildIDChan = make(chan int)
 	go func() { c.buildIDChan <- 1 }()
 
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 200; i++ {
 		go c.jobListener()
 	}
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 200; i++ {
 		go c.buildListener()
 	}
 
@@ -145,8 +146,8 @@ func (c *Parser) jobListener() {
 					c.feedSingleBuild(j, buildID)
 				}
 			}
-			// Sleep 10 seconds so baseline is established
-			time.Sleep(10 * time.Second)
+			// Sleep 2 seconds so baseline is established
+			time.Sleep(2 * time.Second)
 			for index, buildID := range j.GetBuildIDs() {
 				if index == 0 || index%50 != 0 {
 					c.feedSingleBuild(j, buildID)
@@ -164,18 +165,22 @@ func (c *Parser) buildListener() {
 			if isTooOld := c.buildIDTooOld(b.ID); !isTooOld {
 				start := time.Now()
 				build := b.job.NewBuild(b.ID)
-				log.Println("Initialize: ", b.ID, b.job.StoragePath, "took: ", time.Since(start))
+				// log.Println("Initialize: ", b.ID, b.job.StoragePath, "took: ", time.Since(start))
 				if build.FinishTime != nil {
 					if *build.FinishTime > c.StartDate.Unix() {
 						start = time.Now()
 						// content, _ := build.ReadFile("build-log.txt")
-						output, err := exec.Command("gsutil", "cat", "gs://knative-prow/"+build.GetBuildLogPath()).CombinedOutput()
+						tempDir, err := ioutil.TempDir("/tmp/gsutiltempcred", fmt.Sprintf("%d", build.BuildID))
+						if err != nil {
+							log.Fatalf("Error creating temp dir for gsutil auth '%s': '%v'", tempDir, err)
+						}
+						output, err := exec.Command("gsutil", "-o", fmt.Sprintf("\"GSUtil:state_dir=%s\"", tempDir), "cat", "gs://knative-prow/"+build.GetBuildLogPath()).CombinedOutput()
 						if err != nil {
 							log.Fatalf("Error downloading: '%s' -err: '%v' '%v'", build.GetBuildLogPath(), string(output), err)
 						}
 						log.Println("Read file: ", b.ID, b.job.StoragePath, "took: ", time.Since(start))
 						if isTooOld = c.buildIDTooOld(b.ID); !isTooOld {
-							start = time.Now()
+							// start = time.Now()
 							found := c.logParser(string(output))
 							c.mutex.Lock()
 							c.processed = append(c.processed, build.StoragePath)
