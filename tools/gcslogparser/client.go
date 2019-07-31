@@ -190,22 +190,36 @@ func (c *Parser) buildListener() {
 					"query": c.ParseString,
 				}
 				jsonValue, _ := json.Marshal(payload)
-				request, _ := http.NewRequest("POST", "http://"+c.runnerIP, bytes.NewBuffer(jsonValue))
-				request.Header.Set("Content-Type", "application/json")
-				request.Host = c.runnerHost
-				client := &http.Client{}
-				succeed := false
-				for retry := 3; retry > 0 && !succeed; retry-- {
-					response, err := client.Do(request)
-					if nil != err || response == nil {
+				err := fmt.Errorf("foobar error")
+				for retry := 3; retry > 0 && nil != err; retry-- {
+					request, _ := http.NewRequest("POST", "http://"+c.runnerIP, bytes.NewBuffer(jsonValue))
+					request.Header.Set("Content-Type", "application/json")
+					request.Host = c.runnerHost
+					client := &http.Client{}
+
+					var response *http.Response
+					response, err = client.Do(request)
+					if nil != err {
+						errStr := ""
+						if nil != response {
+							errStr += response.Status
+						}
+						err = fmt.Errorf("failed client.Do: '%v' '%s'", err, errStr)
+						continue
+					}
+					if response == nil {
+						err = fmt.Errorf("response is nil")
 						continue
 					}
 					defer response.Body.Close()
 					if response.StatusCode != http.StatusOK {
+						err = fmt.Errorf("response code is: %v", response.StatusCode)
 						continue
 					}
-					output, err := ioutil.ReadAll(response.Body)
+					var output []byte
+					output, err = ioutil.ReadAll(response.Body)
 					if nil != err {
+						err = fmt.Errorf("failed read response body: '%v'", err)
 						continue
 					}
 
@@ -222,16 +236,17 @@ func (c *Parser) buildListener() {
 							c.found = append(c.found, []string{res, time.Unix(cached.StartTime, 0).String(), cached.GcsPath})
 						}
 						c.mutex.Unlock()
-						succeed = true
+						err = nil
 					} else {
+						err = fmt.Errorf("error in runner service itself, only returned single part")
 						time.Sleep(time.Second * 3) // Wait for 3 seconds before retrying
 					}
 				}
-				if !succeed {
+				if nil != err {
 					c.failedCountMutex.Lock()
 					c.failedCount++
 					c.failedCountMutex.Unlock()
-					log.Printf("Warning: Failed parsing '%s'", cached.GcsPath)
+					log.Printf("Warning: Failed parsing '%s' with err: '%v'", cached.GcsPath, err)
 				}
 			}
 			c.wgBuild.Done()

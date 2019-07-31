@@ -48,7 +48,7 @@ func parseOptions() *Flags {
 	flag.BoolVar(&f.ciOnly, "ci-only", false, "supplied if just want to analyze CI jobs")
 	flag.StringVar(&f.groupBy, "groupby", "job(default)", "output groupby, supports: match(group by matches)")
 	flag.StringVar(&f.runnerHost, "host", "gcslogparser-runner-image.default.example.com", "host name of runner service)")
-	flag.StringVar(&f.runnerIP, "ip", "35.239.246.232", "ip address of runner service")
+	flag.StringVar(&f.runnerIP, "ip", "34.68.162.48", "ip address of runner service")
 	flag.Parse()
 	return &f
 }
