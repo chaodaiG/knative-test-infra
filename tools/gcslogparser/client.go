@@ -36,6 +36,7 @@ type Parser struct {
 	cacheHandler *CacheHandler
 	ParseString  string
 	StartDate    time.Time             // Earliest date to be analyzed, i.e. "2019-02-22"
+	EndDate      time.Time             // Latest date to be analyzed, i.e. "2019-02-22"
 	logParser    func(s string) string // logParser function
 	jobFilter    []string              // Jobs to be parsed. If not provided will parse all jobs
 	PrChan       chan prInfo           // For PR use only, make it here so it's easier to cleanup
@@ -140,6 +141,20 @@ func (c *Parser) setStartDate(startDate string) error {
 	return nil
 }
 
+func (c *Parser) setEndDate(endDate string) error {
+	if "" == endDate {
+		c.EndDate = time.Now().Add(time.Hour * 144)
+		return nil
+	}
+	tt, err := time.Parse("2006-01-02", endDate)
+	if nil != err {
+		return fmt.Errorf("invalid start date string, expecing format YYYY-MM-DD: '%v'", err)
+	}
+	c.EndDate = tt
+	return nil
+
+}
+
 func (c *Parser) feedSingleBuild(j prow.Job, buildID int) {
 	// if isTooOld := c.buildIDTooOld(buildID); isTooOld {
 	// 	// log.Printf("skipping %d %s", buildID, j.StoragePath)
@@ -184,16 +199,17 @@ func (c *Parser) buildListener() {
 			if nil != err {
 				log.Fatalf("failed reading from cache handler: '%v'", err)
 			}
-			if nil != cached && cached.StartTime > c.StartDate.Unix() {
+			if nil != cached && cached.StartTime > c.StartDate.Unix() && cached.EndTime < c.EndDate.Unix() {
 				payload := map[string]string{
-					"path":  "gs://knative-prow/" + cached.GcsPath,
-					"query": c.ParseString,
+					"path":          "gs://knative-prow/" + cached.GcsPath,
+					"query_pattern": c.ParseString,
 				}
 				jsonValue, _ := json.Marshal(payload)
 				err := fmt.Errorf("foobar error")
 				for retry := 3; retry > 0 && nil != err; retry-- {
 					request, _ := http.NewRequest("POST", "http://"+c.runnerIP, bytes.NewBuffer(jsonValue))
 					request.Header.Set("Content-Type", "application/json")
+					request.Header.Set("Host", "gcslogparser-runner-image.default.example.com")
 					request.Host = c.runnerHost
 					client := &http.Client{}
 

@@ -18,6 +18,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"sort"
@@ -28,6 +29,7 @@ type Flags struct {
 	serviceAccount string
 	repoNames      string
 	startDate      string
+	endDate        string
 	parseRegex     string
 	jobFilter      string
 	prOnly         bool
@@ -42,6 +44,7 @@ func parseOptions() *Flags {
 	flag.StringVar(&f.serviceAccount, "service-account", os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), "JSON key file for GCS service account")
 	flag.StringVar(&f.repoNames, "repo", "test-infra", "repo to be analyzed, comma separated")
 	flag.StringVar(&f.startDate, "start-date", "2017-01-01", "cut off date to be analyzed")
+	flag.StringVar(&f.endDate, "end-date", "", "cut off date to be analyzed")
 	flag.StringVar(&f.parseRegex, "parser", "", "regex string used for parsing")
 	flag.StringVar(&f.jobFilter, "jobs", "", "jobs to be analyzed, comma separated")
 	flag.BoolVar(&f.prOnly, "pr-only", false, "supplied if just want to analyze PR jobs")
@@ -97,6 +100,7 @@ func parse(f *Flags) *Parser {
 	defer c.cacheHandler.Save()
 
 	c.setStartDate(f.startDate)
+	c.setEndDate(f.endDate)
 	for _, j := range strings.Split(f.jobFilter, ",") {
 		if "" != j {
 			c.jobFilter = append(c.jobFilter, j)
@@ -134,6 +138,17 @@ func main() {
 		log.Printf("--groupby doesn't support %s, fallback to default", f.groupBy)
 		groupByJob(c.found)
 	}
-	log.Printf("Processed %d builds, and found %d matches", len(c.processed), len(c.found))
-	log.Printf("Failed: %d", c.failedCount)
+	summary := fmt.Sprintf("Summary:\nQuerying jobs from repos: '%s'", f.repoNames)
+	summary = fmt.Sprintf("%s\nQuerying pattern: '%s'", summary, f.parseRegex)
+	if "" != f.startDate {
+		summary = fmt.Sprintf("%s\nStart date: %s", summary, f.startDate)
+	}
+	if "" != f.endDate {
+		summary = fmt.Sprintf("%s\nEnd date: %s", summary, f.endDate)
+	}
+	summary = fmt.Sprintf("%s\nResults:\n\tProcessed jobs: %d\n\tFound matches: %d\n\n\n\n\nNo log found: %d",
+		summary, len(c.processed), len(c.found), c.failedCount)
+
+	log.Print(summary)
+
 }

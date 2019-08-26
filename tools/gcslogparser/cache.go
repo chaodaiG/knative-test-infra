@@ -63,6 +63,7 @@ type BuildInfos struct {
 type BuildInfo struct {
 	GcsPath   string `json:"gcsPath"`
 	StartTime int64  `json:"startTime"`
+	EndTime   int64  `json:"finishTime"`
 	Finished  bool   `json:"finished"`
 }
 
@@ -107,18 +108,23 @@ func (c *CacheHandler) GetBuildInfo(job *prow.Job, ID int) (*BuildInfo, error) {
 	c.mutex.Lock()
 	buildInfo, ok = c.buildInfos[buildGcsPath]
 	c.mutex.Unlock()
-	if !ok || buildInfo.StartTime == 0 || buildInfo.Finished == false {
+	if !ok || buildInfo.StartTime == 0 || buildInfo.EndTime == 0 || buildInfo.Finished == false {
 		build := job.NewBuild(ID)
-		if !build.IsStarted() {
+		if !build.IsStarted() || !build.IsFinished() {
 			return nil, nil
 		}
 		startTime, err := build.GetStartTime()
 		if nil != err {
 			return nil, fmt.Errorf("failed getting start time: '%v'", err)
 		}
+		endTime, err := build.GetFinishTime()
+		if nil != err {
+			return nil, fmt.Errorf("failed getting finish time: '%v'", err)
+		}
 		buildInfo = BuildInfo{
 			GcsPath:   build.GetBuildLogPath(),
 			StartTime: startTime,
+			EndTime:   endTime,
 			Finished:  build.IsFinished(),
 		}
 		c.mutex.Lock()

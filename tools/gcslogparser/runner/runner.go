@@ -61,8 +61,9 @@ func readGcsFile(gcsPath string) ([]byte, error) {
 }
 
 type payload struct {
-	Path  string
-	Query string
+	Path         string `json:"path"`
+	Query        string `json:"query"`
+	QueryPattern string `json:"query_pattern"` // regex
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +85,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewEncoder(w).Encode(err); err != nil {
 			panic(err)
 		}
+		return
 	}
 
 	log.Printf("Reading gcs file: '%s'", p.Path)
@@ -94,14 +96,29 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewEncoder(w).Encode(err); err != nil {
 			panic(err)
 		}
+		return
 	}
 
 	log.Printf("Checking whether contains string: '%s'", p.Query)
-	w.WriteHeader(http.StatusOK)
-	found := "false"
-	if strings.Contains(string(contents), p.Query) {
-		found = "true"
+	returnStatus := http.StatusOK
+	found := "true"
+	if "" != p.Query {
+		if !strings.Contains(string(contents), p.Query) {
+			found = "false"
+		}
 	}
+	if "" != p.QueryPattern {
+		pattern, err := regexp.Compile(p.QueryPattern)
+		if nil != err {
+			returnStatus = http.StatusBadRequest
+			found = "false"
+		} else {
+			if !pattern.MatchString(string(contents)) {
+				found = "false"
+			}
+		}
+	}
+	w.WriteHeader(returnStatus)
 	if err := json.NewEncoder(w).Encode(p.Path + ";" + found); err != nil {
 		log.Printf("failed writes to response writer")
 		panic(err)
