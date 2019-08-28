@@ -34,7 +34,8 @@ import (
 
 type Parser struct {
 	cacheHandler *CacheHandler
-	ParseString  string
+	ParseRegex   string
+	Parse        string
 	StartDate    time.Time             // Earliest date to be analyzed, i.e. "2019-02-22"
 	EndDate      time.Time             // Latest date to be analyzed, i.e. "2019-02-22"
 	logParser    func(s string) string // logParser function
@@ -197,12 +198,14 @@ func (c *Parser) buildListener() {
 		case b := <-c.buildChan:
 			cached, err := c.cacheHandler.GetBuildInfo(&b.job, b.ID)
 			if nil != err {
+				c.wgBuild.Done()
 				log.Fatalf("failed reading from cache handler: '%v'", err)
 			}
 			if nil != cached && cached.StartTime > c.StartDate.Unix() && cached.EndTime < c.EndDate.Unix() {
 				payload := map[string]string{
 					"path":          "gs://knative-prow/" + cached.GcsPath,
-					"query_pattern": c.ParseString,
+					"query_pattern": c.ParseRegex,
+					"query":         c.Parse,
 				}
 				jsonValue, _ := json.Marshal(payload)
 				err := fmt.Errorf("foobar error")

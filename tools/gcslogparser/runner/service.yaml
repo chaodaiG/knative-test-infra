@@ -10,3 +10,9 @@ spec:
         spec:
           container:
             image: knative.dev/test-infra/tools/gcslogparser/runner
+            resources:
+              requests:
+                cpu: 400m
+          containerConcurrency: 20
+          nodeSelector:
+            cloud.google.com/gke-nodepool: pool-parser

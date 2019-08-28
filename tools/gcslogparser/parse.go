@@ -31,6 +31,7 @@ type Flags struct {
 	startDate      string
 	endDate        string
 	parseRegex     string
+	parse          string
 	jobFilter      string
 	prOnly         bool
 	ciOnly         bool
@@ -45,7 +46,8 @@ func parseOptions() *Flags {
 	flag.StringVar(&f.repoNames, "repo", "test-infra", "repo to be analyzed, comma separated")
 	flag.StringVar(&f.startDate, "start-date", "2017-01-01", "cut off date to be analyzed")
 	flag.StringVar(&f.endDate, "end-date", "", "cut off date to be analyzed")
-	flag.StringVar(&f.parseRegex, "parser", "", "regex string used for parsing")
+	flag.StringVar(&f.parseRegex, "parser-regex", "", "regex string used for parsing")
+	flag.StringVar(&f.parse, "parser", "", "string used for parsing")
 	flag.StringVar(&f.jobFilter, "jobs", "", "jobs to be analyzed, comma separated")
 	flag.BoolVar(&f.prOnly, "pr-only", false, "supplied if just want to analyze PR jobs")
 	flag.BoolVar(&f.ciOnly, "ci-only", false, "supplied if just want to analyze CI jobs")
@@ -92,7 +94,8 @@ func parse(f *Flags) *Parser {
 	// c.logParser = func(s string) string {
 	// 	return regexp.MustCompile(f.parseRegex).FindString(s)
 	// }
-	c.ParseString = f.parseRegex
+	c.ParseRegex = f.parseRegex
+	c.Parse = f.parse
 	c.runnerHost = f.runnerHost
 	c.runnerIP = f.runnerIP
 	c.CleanupOnInterrupt()
@@ -124,8 +127,8 @@ func parse(f *Flags) *Parser {
 
 func main() {
 	f := parseOptions()
-	if len(f.parseRegex) == 0 {
-		log.Fatal("--parser must be provided")
+	if len(f.parseRegex) == 0 && len(f.parse) == 0 {
+		log.Fatal("--parser or --parser-regex must be provided")
 	}
 
 	c := parse(f)
