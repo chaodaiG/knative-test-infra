@@ -21,8 +21,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
+)
+
+var (
+	globalFlag Flags
 )
 
 type Flags struct {
@@ -40,66 +45,73 @@ type Flags struct {
 	runnerIP       string
 }
 
-func parseOptions() *Flags {
-	var f Flags
-	flag.StringVar(&f.serviceAccount, "service-account", os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), "JSON key file for GCS service account")
-	flag.StringVar(&f.repoNames, "repo", "test-infra", "repo to be analyzed, comma separated")
-	flag.StringVar(&f.startDate, "start-date", "2017-01-01", "cut off date to be analyzed")
-	flag.StringVar(&f.endDate, "end-date", "", "cut off date to be analyzed")
-	flag.StringVar(&f.parseRegex, "parser-regex", "", "regex string used for parsing")
-	flag.StringVar(&f.parse, "parser", "", "string used for parsing")
-	flag.StringVar(&f.jobFilter, "jobs", "", "jobs to be analyzed, comma separated")
-	flag.BoolVar(&f.prOnly, "pr-only", false, "supplied if just want to analyze PR jobs")
-	flag.BoolVar(&f.ciOnly, "ci-only", false, "supplied if just want to analyze CI jobs")
-	flag.StringVar(&f.groupBy, "groupby", "job(default)", "output groupby, supports: match(group by matches), repo(group by repo")
-	flag.StringVar(&f.runnerHost, "host", "gcslogparser-runner-image.default.example.com", "host name of runner service)")
-	flag.StringVar(&f.runnerIP, "ip", "34.68.162.48", "ip address of runner service")
+func parseOptions() {
+	globalFlag = Flags{}
+	flag.StringVar(&globalFlag.serviceAccount, "service-account", os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), "JSON key file for GCS service account")
+	flag.StringVar(&globalFlag.repoNames, "repo", "test-infra", "repo to be analyzed, comma separated")
+	flag.StringVar(&globalFlag.startDate, "start-date", "2017-01-01", "cut off date to be analyzed")
+	flag.StringVar(&globalFlag.endDate, "end-date", "", "cut off date to be analyzed")
+	flag.StringVar(&globalFlag.parseRegex, "parser-regex", "", "regex string used for parsing")
+	flag.StringVar(&globalFlag.parse, "parser", "", "string used for parsing")
+	flag.StringVar(&globalFlag.jobFilter, "jobs", "", "jobs to be analyzed, comma separated")
+	flag.BoolVar(&globalFlag.prOnly, "pr-only", false, "supplied if just want to analyze PR jobs")
+	flag.BoolVar(&globalFlag.ciOnly, "ci-only", false, "supplied if just want to analyze CI jobs")
+	flag.StringVar(&globalFlag.groupBy, "groupby", "job(default)", "output groupby, supports: match(group by matches), repo(group by repo")
+	flag.StringVar(&globalFlag.runnerHost, "host", "gcslogparser-runner-image.default.example.com", "host name of runner service)")
+	flag.StringVar(&globalFlag.runnerIP, "ip", "34.68.162.48", "ip address of runner service")
 	flag.Parse()
-	return &f
+	if _, err := regexp.Compile(globalFlag.parseRegex); err != nil {
+		log.Fatalf("bad matching regex: %q", globalFlag.parseRegex)
+	}
 }
 
-func groupByJob(found [][]string) string {
+func groupByJob(found []finding) string {
 	sort.Slice(found, func(i, j int) bool {
-		return found[i][1] < found[j][1]
+		return found[i].timestamp < found[j].timestamp
 	})
 	return printMsg(found)
 }
 
-func groupByMatch(found [][]string) string {
+func groupByMatch(found []finding) string {
 	msg := ""
-	outArr := make(map[string][][]string)
+	outArr := make(map[string][]finding)
+	keys := make([]string, 0)
 	for _, l := range found {
-		if _, ok := outArr[l[0]]; !ok {
-			outArr[l[0]] = make([][]string, 0, 0)
+		if _, ok := outArr[l.match]; !ok {
+			outArr[l.match] = make([]finding, 0)
+			keys = append(keys, l.match)
 		}
-		outArr[l[0]] = append(outArr[l[0]], l)
+		outArr[l.match] = append(outArr[l.match], l)
 	}
-	for _, sl := range outArr {
+
+	sort.Strings(keys)
+	for _, key := range keys {
+		sl := outArr[key]
 		sort.Slice(sl, func(i, j int) bool {
-			return sl[i][1] > sl[j][1]
+			return sl[i].timestamp > sl[j].timestamp
 		})
 		msg += printMsg(sl)
 	}
 	return msg
 }
 
-func groupByRepo(found [][]string) string {
+func groupByRepo(found []finding) string {
 	sort.Slice(found, func(i, j int) bool {
-		if getJobName(found[i][2]) != getJobName(found[j][2]) {
-			return getJobName(found[i][2]) < getJobName(found[j][2])
+		if getJobName(found[i].gcsPath) != getJobName(found[j].gcsPath) {
+			return getJobName(found[i].gcsPath) < getJobName(found[j].gcsPath)
 		}
-		return found[i][1] < found[j][1]
+		return found[i].timestamp < found[j].timestamp
 	})
 	return printMsg(found)
 }
 
-func printMsg(found [][]string) string {
-	var releaseJobs [][]string
-	var presubmitJobs [][]string
-	var nightlyJobs [][]string
-	var otherJobs [][]string
+func printMsg(found []finding) string {
+	var releaseJobs []finding
+	var presubmitJobs []finding
+	var nightlyJobs []finding
+	var otherJobs []finding
 	for _, elems := range found {
-		jobName := getJobName(elems[2])
+		jobName := getJobName(elems.gcsPath)
 		if strings.Contains(jobName, "release") {
 			releaseJobs = append(releaseJobs, elems)
 		} else if strings.HasPrefix(jobName, "pull") {
@@ -118,10 +130,16 @@ func printMsg(found [][]string) string {
 		msgForType(otherJobs, "Other Jobs"))
 }
 
-func msgForType(found [][]string, name string) string {
+func msgForType(found []finding, name string) string {
 	msg := fmt.Sprintf("%s(%d):", name, len(found))
 	for _, elems := range found {
-		msg = fmt.Sprintf("%s\n\t%s", msg, strings.Join(elems[1:], ","))
+		match := elems.match
+		if globalFlag.parseRegex != "" {
+			if tmp := regexp.MustCompile(globalFlag.parseRegex).FindStringSubmatch(match); len(tmp) >= 2 {
+				match = strings.Join(tmp[1:], "|||")
+			}
+		}
+		msg = fmt.Sprintf("%s\n\t%s, %s, %s", msg, match, elems.timestamp, elems.gcsPath)
 	}
 	return msg
 }
@@ -136,36 +154,36 @@ func getJobName(jobURL string) string {
 }
 
 func parse(f *Flags) *Parser {
-	c, err := NewParser(f.serviceAccount)
+	c, err := NewParser(globalFlag.serviceAccount)
 	if nil != err {
 		log.Fatal(err)
 	}
 	// c.logParser = func(s string) string {
-	// 	return regexp.MustCompile(f.parseRegex).FindString(s)
+	// 	return regexp.MustCompile(globalFlag.parseRegex).FindString(s)
 	// }
-	c.ParseRegex = f.parseRegex
-	c.Parse = f.parse
-	c.runnerHost = f.runnerHost
-	c.runnerIP = f.runnerIP
+	c.ParseRegex = globalFlag.parseRegex
+	c.Parse = globalFlag.parse
+	c.runnerHost = globalFlag.runnerHost
+	c.runnerIP = globalFlag.runnerIP
 	c.CleanupOnInterrupt()
 	defer c.cleanup()
 	defer c.cacheHandler.Save()
 
-	c.setStartDate(f.startDate)
-	c.setEndDate(f.endDate)
-	for _, j := range strings.Split(f.jobFilter, ",") {
+	c.setStartDate(globalFlag.startDate)
+	c.setEndDate(globalFlag.endDate)
+	for _, j := range strings.Split(globalFlag.jobFilter, ",") {
 		if "" != j {
 			c.jobFilter = append(c.jobFilter, j)
 		}
 	}
 
-	for _, repo := range strings.Split(f.repoNames, ",") {
+	for _, repo := range strings.Split(globalFlag.repoNames, ",") {
 		log.Printf("Repo: '%s'", repo)
-		if !f.prOnly {
+		if !globalFlag.prOnly {
 			log.Println("\tProcessing postsubmit jobs")
 			c.feedPostsubmitJobsFromRepo(repo)
 		}
-		if !f.ciOnly {
+		if !globalFlag.ciOnly {
 			log.Println("\tProcessing presubmit jobs")
 			c.feedPresubmitJobsFromRepo(repo)
 		}
@@ -175,26 +193,26 @@ func parse(f *Flags) *Parser {
 }
 
 func main() {
-	f := parseOptions()
-	if len(f.parseRegex) == 0 && len(f.parse) == 0 {
+	parseOptions()
+	if len(globalFlag.parseRegex) == 0 && len(globalFlag.parse) == 0 {
 		log.Fatal("--parser or --parser-regex must be provided")
 	}
 
-	c := parse(f)
+	c := parse(&globalFlag)
 
-	summary := fmt.Sprintf("Summary:\nQuerying jobs from repos: '%s'", f.repoNames)
-	summary = fmt.Sprintf("%s\nQuerying pattern: '%s'", summary, f.parse+f.parseRegex)
-	if "" != f.startDate {
-		summary = fmt.Sprintf("%s\nStart date: %s", summary, f.startDate)
+	summary := fmt.Sprintf("Summary:\nQuerying jobs from repos: '%s'", globalFlag.repoNames)
+	summary = fmt.Sprintf("%s\nQuerying pattern: '%s'", summary, globalFlag.parse+globalFlag.parseRegex)
+	if "" != globalFlag.startDate {
+		summary = fmt.Sprintf("%s\nStart date: %s", summary, globalFlag.startDate)
 	}
-	if "" != f.endDate {
-		summary = fmt.Sprintf("%s\nEnd date: %s", summary, f.endDate)
+	if "" != globalFlag.endDate {
+		summary = fmt.Sprintf("%s\nEnd date: %s", summary, globalFlag.endDate)
 	}
 	summary = fmt.Sprintf("%s\nResults:\n\tProcessed jobs: %d\n\tFound matches: %d",
 		summary, len(c.processed), len(c.found))
 
 	var ind string
-	switch f.groupBy {
+	switch globalFlag.groupBy {
 	case "job":
 		ind = groupByJob(c.found)
 	case "match":
@@ -202,7 +220,7 @@ func main() {
 	case "repo":
 		ind = groupByRepo(c.found)
 	default:
-		// log.Printf("--groupby doesn't support %s, fallback to default", f.groupBy)
+		// log.Printf("--groupby doesn't support %s, fallback to default", globalFlag.groupBy)
 		ind = groupByJob(c.found)
 	}
 

@@ -32,6 +32,15 @@ import (
 	"knative.dev/test-infra/shared/prow"
 )
 
+// finding is the basic element to be returned for all builds that match with
+// query
+type finding struct {
+	// match is the string that matches with query
+	match     string
+	timestamp string
+	gcsPath   string
+}
+
 type Parser struct {
 	cacheHandler *CacheHandler
 	ParseRegex   string
@@ -47,7 +56,7 @@ type Parser struct {
 	wgJob        sync.WaitGroup
 	wgBuild      sync.WaitGroup
 
-	found     [][]string
+	found     []finding
 	processed []string
 
 	runnerHost string
@@ -242,17 +251,16 @@ func (c *Parser) buildListener() {
 						continue
 					}
 
-					res := ""
-					parts := strings.Split(strings.Trim(string(output), "\n\r\"'"), ";")
+					match := ""
+					// Result will be returned in the form of
+					// [GCS_PATH];[MATCH_STRING], split on first occurance of ";"
+					parts := strings.SplitN(strings.Trim(string(output), "\n\r\"'"), ";", 2)
 					if len(parts) > 1 { // single element in parts means it failed
-						if strings.Trim(parts[1], " ") == "true" {
-							res = "true"
-						}
-
+						match = strings.Trim(parts[1], " ")
 						c.mutex.Lock()
 						c.processed = append(c.processed, cached.GcsPath)
-						if res == "true" {
-							c.found = append(c.found, []string{res, time.Unix(cached.StartTime, 0).String(), cached.GcsPath})
+						if match != "" {
+							c.found = append(c.found, finding{match, time.Unix(cached.StartTime, 0).String(), cached.GcsPath})
 						}
 						c.mutex.Unlock()
 						err = nil

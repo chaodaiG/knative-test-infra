@@ -101,25 +101,22 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Checking whether contains string: '%s'", p.Query)
 	returnStatus := http.StatusOK
-	found := "true"
-	if "" != p.Query {
-		if !strings.Contains(string(contents), p.Query) {
-			found = "false"
+	match := ""
+	if p.Query != "" {
+		if strings.Contains(string(contents), p.Query) {
+			match = p.Query
 		}
-	}
-	if "" != p.QueryPattern {
-		pattern, err := regexp.Compile(p.QueryPattern)
-		if nil != err {
-			returnStatus = http.StatusBadRequest
-			found = "false"
-		} else {
-			if !pattern.MatchString(string(contents)) {
-				found = "false"
+	} else if p.QueryPattern != "" {
+		returnStatus = http.StatusBadRequest
+		if pattern, err := regexp.Compile(p.QueryPattern); err == nil {
+			returnStatus = http.StatusOK
+			if matches := pattern.FindStringSubmatch(string(contents)); len(matches) >= 1 {
+				match = matches[0]
 			}
 		}
 	}
 	w.WriteHeader(returnStatus)
-	if err := json.NewEncoder(w).Encode(p.Path + ";" + found); err != nil {
+	if err := json.NewEncoder(w).Encode(p.Path + ";" + match); err != nil {
 		log.Printf("failed writes to response writer")
 		panic(err)
 	}
