@@ -37,6 +37,10 @@ type storageClient struct {
 
 // NewClient creates new GCS client with given service account
 func NewClient(ctx context.Context, serviceAccount string) (Client, error) {
+	if len(serviceAccount) == 0 {
+		client, err := storage.NewClient(ctx)
+		return &storageClient{Client: client}, err
+	}
 	client, err := storage.NewClient(ctx, option.WithCredentialsFile(serviceAccount))
 	if err != nil {
 		return nil, err

@@ -35,7 +35,7 @@ import (
 
 const (
 	// BucketName is the gcs bucket for all knative builds
-	BucketName = "knative-prow"
+	BucketName = "gke-prow"
 	// Latest is the filename storing latest build number
 	Latest = "latest-build.txt"
 	// BuildLog is the filename for build log
@@ -274,6 +274,16 @@ func (b *Build) GetStartTime() (int64, error) {
 		return -1, err
 	}
 	return started.Timestamp, nil
+}
+
+// GetFinishTime gets finished timestamp of a build,
+// returning -1 if the build didn't finish or if it failed to get the timestamp
+func (b *Build) GetFinishedJSON() (*Finished, error) {
+	var finished Finished
+	if err := unmarshalJSONFile(path.Join(b.StoragePath, FinishedJSON), &finished); err != nil {
+		return nil, err
+	}
+	return &finished, nil
 }
 
 // GetFinishTime gets finished timestamp of a build,
